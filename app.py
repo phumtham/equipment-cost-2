@@ -1,74 +1,76 @@
 
 import streamlit as st
 import pandas as pd
+from fpdf import FPDF
+from io import BytesIO
 
 # Load the Excel file
 df = pd.read_excel("ค่าอุปกรณ์.xlsx", engine="openpyxl")
 
-# Mapping of scheme names to column names
-scheme_columns = {
-    "Universal healthcare": "Universal healthcare",
-    "UCEP": "UCEP",
-    "Social Security": "Social Security",
-    "Civil Servant": "Civil Servant",
-    "Self pay": "Self pay"
-}
+# Rename columns for easier access
+df.columns = ['equipment', 'Code', 'Cost', 'Universal healthcare', 'UCEP', 'Social Security', 'Civil Servant', 'Self pay']
 
-# Select a healthcare scheme
-selected_scheme = st.selectbox("Select Healthcare Scheme", list(scheme_columns.keys()))
+# Set default quantities
+default_quantities = {name: 0 for name in df['equipment']}
+default_quantities['Angiogram'] = 1
+default_quantities['Contrast media'] = 4
+default_quantities['femoral sheath'] = 1
+default_quantities['0.038 Wire'] = 1
 
-# Initialize a dictionary to store quantities
-quantities = {}
+# Streamlit UI
+st.title("Healthcare Equipment Cost Calculator")
 
-# Display input fields for each equipment
+# Select healthcare scheme
+schemes = ['Universal healthcare', 'UCEP', 'Social Security', 'Civil Servant', 'Self pay']
+selected_scheme = st.selectbox("Select Healthcare Scheme", schemes)
+
+# Input quantities
 st.header("Enter Equipment Quantities")
+quantities = {}
 for index, row in df.iterrows():
-    equipment = row["equipment"]
-    default_qty = 0
-    if equipment == "Angiogram":
-        default_qty = 1
-    elif equipment == "Contrast media":
-        default_qty = 4
-    elif equipment in ["femoral sheath", "0.038 Wire"]:
-        default_qty = 1
-    qty = st.number_input(f"{equipment}", min_value=0, value=default_qty, step=1)
-    quantities[equipment] = qty
+    eq_name = row['equipment']
+    default_qty = default_quantities.get(eq_name, 0)
+    qty = st.number_input(f"{eq_name}", min_value=0, value=default_qty, step=1)
+    quantities[eq_name] = qty
 
-# Filter out equipment with quantity 0
-used_equipment = {eq: qty for eq, qty in quantities.items() if qty > 0}
-
-# Calculate costs
-summary = []
-for eq, qty in used_equipment.items():
-    row = df[df["equipment"] == eq].iloc[0]
-    cost = row["Cost"] * qty
-    reimbursement = row[scheme_columns[selected_scheme]] * qty
-    out_of_pocket = max(0, cost - reimbursement)
-    summary.append({
-        "Equipment": eq,
-        "Quantity": qty,
-        "Total Cost (THB)": cost,
-        "Reimbursement (THB)": reimbursement,
-        "Out-of-Pocket (THB)": out_of_pocket
-    })
+# Filter used equipment
+used_equipment = df[df['equipment'].isin([k for k, v in quantities.items() if v > 0])].copy()
+used_equipment['Quantity'] = used_equipment['equipment'].map(quantities)
+used_equipment['Total Cost'] = used_equipment['Cost'] * used_equipment['Quantity']
+used_equipment['Reimbursement'] = used_equipment[selected_scheme] * used_equipment['Quantity']
+used_equipment['Out of Pocket'] = used_equipment['Total Cost'] - used_equipment['Reimbursement']
+used_equipment['Out of Pocket'] = used_equipment['Out of Pocket'].apply(lambda x: max(x, 0))
 
 # Display summary
 st.header("Cost Summary")
-summary_df = pd.DataFrame(summary)
-st.dataframe(summary_df)
+st.dataframe(used_equipment[['equipment', 'Quantity', 'Total Cost', 'Reimbursement', 'Out of Pocket']])
 
 # Generate PDF
-from fpdf import FPDF
-
-if st.button("Generate PDF Report"):
+def generate_pdf(data, scheme):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt=f"Healthcare Scheme: {selected_scheme}", ln=True)
-
-    for _, row in summary_df.iterrows():
-        pdf.cell(200, 10, txt=f"{row['Equipment']} (x{row['Quantity']}): Cost={row['Total Cost (THB)']} THB, Reimbursement={row['Reimbursement (THB)']} THB, Out-of-Pocket={row['Out-of-Pocket (THB)']} THB", ln=True)
-
+    pdf.cell(200, 10, txt=f"Healthcare Scheme: {scheme}", ln=True, align='L')
+    pdf.ln(5)
+    pdf.cell(40, 10, "Equipment", 1)
+    pdf.cell(20, 10, "Qty", 1)
+    pdf.cell(30, 10, "Cost", 1)
+    pdf.cell(40, 10, "Reimbursement", 1)
+    pdf.cell(40, 10, "Out of Pocket", 1)
+    pdf.ln()
+    for _, row in data.iterrows():
+        pdf.cell(40, 10, str(row['equipment']), 1)
+        pdf.cell(20, 10, str(row['Quantity']), 1)
+        pdf.cell(30, 10, f"{row['Total Cost']:.2f}", 1)
+        pdf.cell(40, 10, f"{row['Reimbursement']:.2f}", 1)
+        pdf.cell(40, 10, f"{row['Out of Pocket']:.2f}", 1)
+        pdf.ln()
     pdf_output = BytesIO()
     pdf.output(pdf_output)
-    st.download_button("Download PDF", data=pdf_output.getvalue(), file_name="cost_summary.pdf", mime="application/pdf")
+    pdf_output.seek(0)
+    return pdf_output
+
+# Download PDF
+if st.button("Generate PDF Report"):
+    pdf_file = generate_pdf(used_equipment, selected_scheme)
+    st.download_button(label="Download PDF", data=pdf_file, file_name="cost_summary.pdf", mime="application/pdf")
